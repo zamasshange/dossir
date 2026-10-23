@@ -415,5 +415,3 @@ OSINT techniques used:
 ### License
 
 MIT © [Maigret](https://github.com/soxoj/maigret)
-#   d o s s i r  
- 

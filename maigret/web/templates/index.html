@@ -1,51 +1,370 @@
 {% extends "base.html" %}
+{% block title %}Maigret — a name, four ways{% endblock %}
 
 {% block content %}
-<style>
-    .main-search-section {
-        background: rgba(255, 255, 255, 0.03);
-        padding: 2rem;
-        border-radius: 8px;
-        margin-bottom: 2rem;
-    }
+<section class="stage">
+    <canvas id="field" aria-hidden="true"></canvas>
+    <div class="stage-inner">
+        {% if error %}
+        <p class="flash flash-danger" role="status">{{ error }}</p>
+        {% endif %}
 
-    .search-button {
-        width: 100%;
-        padding: 1rem;
-        font-size: 1.2rem;
-        margin-top: 2rem;
-    }
-</style>
+        <p class="eyebrow"><span>Public pages only</span><span>One lookup, four jobs</span></p>
+        <h1 id="hero-title">Is this name<br><em>still free?</em></h1>
+        <p class="lede" id="hero-lede">Before you claim a handle, print a logo, or open a shop page, see which well-known sites already took it. Type a few names if you are still deciding.</p>
 
-<div class="form-container">
-    {% if error %}
-    <div class="alert alert-danger">{{ error }}</div>
-    {% endif %}
-
-    <form method="POST" action="{{ url_for('live_start') }}" class="mb-4">
-        <div class="main-search-section">
-            <div class="mb-4">
-                <label for="usernames" class="form-label h5">Usernames to Search</label>
-                <textarea class="form-control" id="usernames" name="usernames" rows="3" required
-                    placeholder="Enter one or more usernames (separated by spaces or commas)..."></textarea>
-            </div>
-
-            <div class="btn-group" role="group" aria-label="Search mode">
-                <input type="radio" class="btn-check" name="mode" id="mode-fast" value="fast" checked>
-                <label class="btn btn-outline-secondary" for="mode-fast">Fast check ({{ web_settings.top_sites }} sites)</label>
-                <input type="radio" class="btn-check" name="mode" id="mode-full" value="full">
-                <label class="btn btn-outline-secondary" for="mode-full">Full check</label>
-            </div>
+        <div class="jobs" role="radiogroup" aria-label="What do you want to do">
+            <button type="button" class="job is-on" data-purpose="free" aria-pressed="true">
+                <span class="job-kicker">Availability</span>
+                <strong>Is this name free?</strong>
+                <span>Claim a handle, name a shop, or pick between a few ideas.</span>
+            </button>
+            <button type="button" class="job" data-purpose="mine" aria-pressed="false">
+                <span class="job-kicker">Your pages</span>
+                <strong>Where am I online?</strong>
+                <span>Gather the public pages on a handle you already use, and keep the links.</span>
+            </button>
+            <button type="button" class="job" data-purpose="lookup" aria-pressed="false">
+                <span class="job-kicker">Someone you know</span>
+                <strong>Find their public pages</strong>
+                <span>Type any full name the way it is written. A person, a creator, or a company.</span>
+            </button>
+            <button type="button" class="job" data-purpose="copy" aria-pressed="false">
+                <span class="job-kicker">Your name, other pages</span>
+                <strong>Who else uses this name?</strong>
+                <span>A customer might be looking at the wrong page. Open each one and check.</span>
+            </button>
         </div>
 
-        <p class="text-muted">
-            Filters, proxies and advanced options now live in
-            <a href="#" data-bs-toggle="modal" data-bs-target="#settingsModal">Settings</a> (&#9881; top right).
-        </p>
+        <form method="POST" action="{{ url_for('live_start') }}" id="search-form" class="search-form">
+            <input type="hidden" name="purpose" id="purpose" value="free">
+            <label class="field-label" for="usernames">Name</label>
+            <textarea class="field" id="usernames" name="usernames" rows="2" required
+                placeholder="Ada Musa, or a handle you already use"></textarea>
+            <p class="help">Any full name stays one search. Ada Musa brings up the public pages listed under that name, plus the handles made from the whole name, such as adamusa. Use a comma between extra names.</p>
 
-        <button type="submit" id="startBtn" class="btn search-button" style="background-color: rgb(249, 207, 0); color: black;">
-            Start Search
-        </button>
-    </form>
-</div>
+            <div class="platform-field">
+                <label class="field-label" for="platform-search">Platforms</label>
+                <div class="suggest">
+                    <input class="control" id="platform-search" type="search" placeholder="Search a platform — Instagram, GitHub, Steam…" autocomplete="off">
+                    <ul class="suggest-list" id="platform-list" role="listbox" hidden></ul>
+                </div>
+                <div class="chips" id="platform-chips"></div>
+                <input type="hidden" name="site" id="platform-site" value="">
+                <p class="help">Optional. Pick Instagram, GitHub, or any other site to look only there.</p>
+            </div>
+
+            <div class="modes" role="radiogroup" aria-label="How many sites">
+                <label class="mode">
+                    <input type="radio" name="mode" id="mode-10" value="10" checked>
+                    <span class="mode-kicker">Known</span>
+                    <span class="mode-title">Top 10</span>
+                    <span class="mode-note">Facebook, Instagram, TikTok, and the rest of the names everyone knows.</span>
+                </label>
+                <label class="mode">
+                    <input type="radio" name="mode" id="mode-50" value="50">
+                    <span class="mode-kicker">Known</span>
+                    <span class="mode-title">Top 50</span>
+                    <span class="mode-note">The familiar sites first, then the next most used.</span>
+                </label>
+                <label class="mode">
+                    <input type="radio" name="mode" id="mode-100" value="100">
+                    <span class="mode-kicker">Known</span>
+                    <span class="mode-title">Top 100</span>
+                    <span class="mode-note">A wider pass that still starts with the household names.</span>
+                </label>
+                <label class="mode">
+                    <input type="radio" name="mode" id="mode-fast" value="fast">
+                    <span class="mode-kicker">Wide</span>
+                    <span class="mode-title">Top {{ web_settings.top_sites }}</span>
+                    <span class="mode-note">The broad lookup. Ranked by how heavily each site is used.</span>
+                </label>
+                <label class="mode">
+                    <input type="radio" name="mode" id="mode-full" value="full">
+                    <span class="mode-kicker">Everything</span>
+                    <span class="mode-title">All sites</span>
+                    <span class="mode-note">Every enabled site. Slower, and it will find the obscure ones too.</span>
+                </label>
+            </div>
+
+            <button type="submit" id="startBtn" class="btn btn-block">Check if it's free</button>
+            <p class="scope">
+                Timeout {{ web_settings.timeout }}s
+                {% if web_settings.tags %} · including {{ web_settings.tags | join(', ') }}{% endif %}
+                {% if web_settings.excluded_tags %} · excluding {{ web_settings.excluded_tags | join(', ') }}{% endif %}
+                {% if web_settings.site_list %} · only {{ web_settings.site_list | join(', ') }}{% endif %}
+                · <button type="button" data-open-settings>more options</button>
+            </p>
+        </form>
+
+        <section id="kept" class="kept" hidden>
+            <div class="kept-head">
+                <h2>Links you kept</h2>
+                <button type="button" class="btn btn-ghost" id="kept-copy">Copy links</button>
+                <button type="button" class="btn btn-ghost" id="kept-clear">Clear</button>
+            </div>
+            <p class="help">Pages you marked as yours, saved in this browser. Paste them into a bio, a client note, or a shop profile.</p>
+            <ul id="kept-list" class="kept-list"></ul>
+        </section>
+    </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    (function () {
+        const form = document.getElementById('search-form');
+        const field = document.getElementById('usernames');
+        const purposeInput = document.getElementById('purpose');
+        const jobs = {
+            free: {
+                title: 'Is this name<br><em>still free?</em>',
+                lede: 'Before you claim a handle, print a logo, or open a shop page, see which well-known sites already took it. Type a few names if you are still deciding.',
+                placeholder: 'The name you want — or a few, separated by commas',
+                button: "Check if it's free",
+                mode: 'mode-10'
+            },
+            mine: {
+                title: 'Where do you<br><em>already show up?</em>',
+                lede: 'Use the handle you already post with. Maigret finds the public pages, you mark the ones that are yours, and the links stay in this browser.',
+                placeholder: 'The handle you already use',
+                button: 'Find my pages',
+                mode: 'mode-50'
+            },
+            lookup: {
+                title: 'Which public pages<br><em>use this name?</em>',
+                lede: 'Type any full name the way people write it. The lookup uses that name: the public pages listed under it, and the handles made from the whole name.',
+                placeholder: 'Ada Musa',
+                button: 'Look it up',
+                mode: 'mode-50'
+            },
+            copy: {
+                title: 'Who else is<br><em>using your name?</em>',
+                lede: 'If a customer, a client, or a stranger might land on the wrong page, see every public profile that wears this name. You open them and decide.',
+                placeholder: 'Your name, or your business name',
+                button: 'Check this name',
+                mode: 'mode-50'
+            }
+        };
+        let modeTouched = false;
+        document.querySelectorAll('input[name="mode"]').forEach(function (radio) {
+            radio.addEventListener('change', function () { modeTouched = true; });
+        });
+        document.querySelectorAll('.job').forEach(function (btn) {
+            btn.addEventListener('click', function () {
+                const job = jobs[btn.getAttribute('data-purpose')];
+                if (!job) return;
+                document.querySelectorAll('.job').forEach(function (other) {
+                    const on = other === btn;
+                    other.classList.toggle('is-on', on);
+                    other.setAttribute('aria-pressed', on ? 'true' : 'false');
+                });
+                purposeInput.value = btn.getAttribute('data-purpose');
+                document.getElementById('hero-title').innerHTML = job.title;
+                document.getElementById('hero-lede').textContent = job.lede;
+                field.placeholder = job.placeholder;
+                document.getElementById('startBtn').textContent = job.button;
+                if (!modeTouched) {
+                    const mode = document.getElementById(job.mode);
+                    if (mode) mode.checked = true;
+                }
+                field.focus();
+            });
+        });
+        form.addEventListener('submit', function () {
+            const btn = document.getElementById('startBtn');
+            btn.disabled = true;
+            btn.textContent = 'Looking it up…';
+        });
+
+        (function () {
+            const box = document.getElementById('kept');
+            const list = document.getElementById('kept-list');
+            if (!box || !window.maigretPages) return;
+            function paint() {
+                const data = window.maigretPages.load();
+                const names = Object.keys(data);
+                list.replaceChildren();
+                if (!names.length) {
+                    box.hidden = true;
+                    return;
+                }
+                names.forEach(function (name) {
+                    (data[name] || []).forEach(function (item) {
+                        const li = document.createElement('li');
+                        const who = document.createElement('span');
+                        who.textContent = name;
+                        const a = document.createElement('a');
+                        a.href = item.url;
+                        a.target = '_blank';
+                        a.rel = 'noopener';
+                        a.textContent = item.site;
+                        li.append(who, a);
+                        list.appendChild(li);
+                    });
+                });
+                box.hidden = false;
+            }
+            document.getElementById('kept-copy').addEventListener('click', function () {
+                window.maigretPages.copy();
+            });
+            document.getElementById('kept-clear').addEventListener('click', function () {
+                if (!window.confirm('Remove the links saved in this browser?')) return;
+                window.maigretPages.save({});
+                paint();
+            });
+            paint();
+        })();
+        field.addEventListener('keydown', function (e) {
+            if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) form.requestSubmit();
+        });
+
+        (function () {
+            const input = document.getElementById('platform-search');
+            const list = document.getElementById('platform-list');
+            const hidden = document.getElementById('platform-site');
+            const chips = document.getElementById('platform-chips');
+            const picked = new Map();
+            let catalog = null;
+
+            function score(query, item) {
+                const name = item.name.toLowerCase();
+                let host = '';
+                try {
+                    host = new URL(item.url).hostname.replace(/^www\./, '').toLowerCase();
+                } catch (e) { /* no url */ }
+                if (name === query || host === query) return 0;
+                if (name.startsWith(query) || host.startsWith(query)) return 1;
+                if (name.includes(query) || host.includes(query)) return 2;
+                return -1;
+            }
+
+            function sync() {
+                hidden.value = Array.from(picked.keys()).join(',');
+                chips.replaceChildren();
+                picked.forEach(function (item) {
+                    const chip = document.createElement('span');
+                    chip.className = 'chip';
+                    const icon = item.url ? window.maigretIcon(item.url) : '';
+                    if (icon) {
+                        const img = document.createElement('img');
+                        img.alt = '';
+                        img.referrerPolicy = 'no-referrer';
+                        img.src = icon;
+                        img.addEventListener('error', function () { img.remove(); });
+                        chip.appendChild(img);
+                    }
+                    const label = document.createElement('span');
+                    label.textContent = item.name;
+                    const remove = document.createElement('button');
+                    remove.type = 'button';
+                    remove.className = 'chip-x';
+                    remove.setAttribute('aria-label', 'Remove ' + item.name);
+                    remove.textContent = '×';
+                    remove.addEventListener('click', function () {
+                        picked.delete(item.name);
+                        sync();
+                    });
+                    chip.append(label, remove);
+                    chips.appendChild(chip);
+                });
+            }
+
+            function loadCatalog() {
+                if (!catalog) {
+                    catalog = fetch("{{ url_for('api_sites') }}")
+                        .then(function (r) { return r.json(); })
+                        .then(function (data) {
+                            if (data.platforms && data.platforms.length) return data.platforms;
+                            return (data.sites || [])
+                                .filter(function (name) { return !/^https?:/i.test(name); })
+                                .map(function (name) { return { name: name, url: '' }; });
+                        });
+                }
+                return catalog;
+            }
+
+            window.maigretSuggest(input, list, {
+                getItems: function (q) {
+                    const query = q.toLowerCase();
+                    return loadCatalog().then(function (all) {
+                        return all
+                            .filter(function (item) { return !picked.has(item.name); })
+                            .map(function (item) { return { item: item, rank: score(query, item) }; })
+                            .filter(function (row) { return row.rank >= 0; })
+                            .sort(function (a, b) {
+                                return a.rank - b.rank || a.item.name.localeCompare(b.item.name);
+                            })
+                            .map(function (row) { return row.item; });
+                    });
+                },
+                onPick: function (item) {
+                    picked.set(item.name, item);
+                    sync();
+                },
+            });
+        })();
+
+        const canvas = document.getElementById('field');
+        if (!canvas) return;
+        const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        const ctx = canvas.getContext('2d');
+        let width = 0;
+        let height = 0;
+        let dots = [];
+        const ratio = Math.min(window.devicePixelRatio || 1, 2);
+
+        function resize() {
+            width = canvas.width = Math.floor(canvas.offsetWidth * ratio);
+            height = canvas.height = Math.floor(canvas.offsetHeight * ratio);
+        }
+
+        function seed() {
+            const count = Math.max(48, Math.min(140, Math.floor((canvas.offsetWidth * canvas.offsetHeight) / 12000)));
+            dots = Array.from({ length: count }, function () {
+                return {
+                    x: Math.random(),
+                    y: Math.random(),
+                    r: Math.random() * 1.5 + 0.35,
+                    a: Math.random() * Math.PI * 2,
+                    v: Math.random() * 0.004 + 0.001,
+                    gold: Math.random() > 0.84,
+                };
+            });
+        }
+
+        function frame() {
+            ctx.clearRect(0, 0, width, height);
+            const paper = document.documentElement.getAttribute('data-theme') === 'paper';
+            const pull = Math.min((field.value.trim().length || 0) / 28, 1);
+            dots.forEach(function (d) {
+                if (!reduce) {
+                    d.a += d.v;
+                    d.x += Math.cos(d.a) * 0.00045;
+                    d.y += Math.sin(d.a * 0.73) * 0.00045;
+                    if (pull) {
+                        d.x += (0.72 - d.x) * 0.0035 * pull;
+                        d.y += (0.38 - d.y) * 0.0035 * pull;
+                    }
+                    if (d.x < -0.02 || d.x > 1.02) d.x = Math.random();
+                    if (d.y < -0.02 || d.y > 1.02) d.y = Math.random();
+                }
+                ctx.beginPath();
+                ctx.arc(d.x * width, d.y * height, d.r * ratio, 0, Math.PI * 2);
+                if (d.gold) ctx.fillStyle = paper ? 'rgba(163,123,0,0.55)' : 'rgba(231,176,8,0.7)';
+                else ctx.fillStyle = paper ? 'rgba(28,25,21,0.22)' : 'rgba(243,238,230,0.28)';
+                ctx.fill();
+            });
+            if (!reduce) requestAnimationFrame(frame);
+        }
+
+        resize();
+        seed();
+        frame();
+        window.addEventListener('resize', function () {
+            resize();
+            if (reduce) frame();
+        });
+    })();
+</script>
 {% endblock %}

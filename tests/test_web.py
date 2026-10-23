@@ -819,3 +819,74 @@ def test_settings_modal_present_on_every_page(client, web_app):
     resp = client.get('/history')
     body = resp.get_data(as_text=True)
     assert 'id="settingsModal"' in body
+
+
+def test_real_name_is_not_split_and_finds_listed_pages(client, web_app, monkeypatch):
+    """'Kanye West' stays one name. The words are not searched on their own."""
+    seen = []
+
+    async def fake_search(*args, **kwargs):
+        username = kwargs.get('username')
+        seen.append(username)
+        notify = kwargs.get('query_notify')
+        if notify is not None:
+            notify.set_total(1)
+        if username == 'kanyewest' and notify is not None:
+            result = MaigretCheckResult(
+                username='kanyewest',
+                site_name='Instagram',
+                site_url_user='https://www.instagram.com/kanyewest/',
+                status=MaigretCheckStatus.CLAIMED,
+                ids_data={},
+            )
+            notify.update(result)
+            return {
+                'Instagram': {
+                    'status': result,
+                    'url_user': result.site_url_user,
+                }
+            }
+        return {}
+
+    monkeypatch.setattr(maigret, 'search', fake_search)
+    monkeypatch.setattr(
+        web_app,
+        'lookup_public_name',
+        lambda name: [
+            {
+                'site': 'Wikipedia',
+                'url': 'https://en.wikipedia.org/wiki/Kanye_West',
+                'about': 'American rapper.',
+                'handle': '',
+            }
+        ],
+    )
+    for saver in (
+        'save_graph_report',
+        'save_csv_report',
+        'save_json_report',
+        'save_pdf_report',
+        'save_html_report',
+    ):
+        monkeypatch.setattr(maigret.report, saver, lambda *a, **kw: None)
+    monkeypatch.setattr(maigret.report, 'generate_report_context', lambda *a, **kw: {})
+
+    start = client.post('/api/scan', data={'usernames': 'Kanye West'})
+    assert start.status_code == 200
+    job_id = start.get_json()['job_id']
+    body = client.get(f'/api/scan/{job_id}/stream').get_data(as_text=True)
+    events = [
+        json.loads(line[6:]) for line in body.splitlines() if line.startswith('data: ')
+    ]
+
+    assert 'Kanye' not in seen
+    assert 'West' not in seen
+    assert 'kanyewest' in seen
+    assert any(
+        event.get('type') == 'name' and event.get('query') == 'Kanye West'
+        for event in events
+    )
+    found_sites = [event['site'] for event in events if event.get('type') == 'found']
+    assert 'Wikipedia' in found_sites
+    assert 'Instagram' in found_sites
+    assert web_app.job_results[job_id]['individual_reports'][0]['username'] == 'Kanye West'

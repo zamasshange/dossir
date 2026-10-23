@@ -1,12 +1,19 @@
 {% extends "base.html" %}
-{% block content %}
-<div class="form-container">
-    <h1 class="mb-4">Search History</h1>
+{% block title %}Past lookups — Maigret{% endblock %}
 
+{% block content %}
+<section class="sheet">
     {% if not entries %}
-    <p>No searches have been run yet.</p>
+    <div class="empty">
+        <p class="eyebrow"><span>History</span></p>
+        <h1>Nothing looked up yet.</h1>
+        <p>No searches have been run yet.</p>
+    </div>
     {% else %}
-    <table class="table table-striped align-middle">
+    <p class="eyebrow"><span>History</span><span>{{ entries | length }} this session</span></p>
+    <h1>Lookups from<br><em>this session.</em></h1>
+    <p class="sheet-lead">These stay until you close Maigret. Open one to come back to its profiles.</p>
+    <table class="log-table">
         <thead>
             <tr>
                 <th>Started</th>
@@ -21,17 +28,17 @@
             <tr>
                 <td>{{ result.started_at or '—' }}</td>
                 <td>{{ result.usernames | join(', ') if result.usernames else '—' }}</td>
-                <td>{{ result.found_count if result.status == 'completed' else '—' }}</td>
+                <td class="num">{{ result.found_count if result.status == 'completed' else '—' }}</td>
                 <td>
                     {% if result.status == 'completed' %}
-                    <span class="badge bg-success">completed</span>
+                    <span class="badge badge-ok">completed</span>
                     {% else %}
-                    <span class="badge bg-danger" title="{{ result.error }}">failed</span>
+                    <span class="badge badge-bad" title="{{ result.error }}">failed</span>
                     {% endif %}
                 </td>
                 <td>
                     {% if result.status == 'completed' %}
-                    <a href="{{ url_for('results', session_id=result.session_folder) }}" class="btn btn-sm btn-outline-warning">View</a>
+                    <a href="{{ url_for('results', session_id=result.session_folder) }}" class="btn btn-ghost">Open</a>
                     {% endif %}
                 </td>
             </tr>
@@ -39,5 +46,5 @@
         </tbody>
     </table>
     {% endif %}
-</div>
+</section>
 {% endblock %}

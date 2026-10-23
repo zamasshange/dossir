@@ -1,16 +1,18 @@
 {% extends "base.html" %}
+{% block title %}Search running — Maigret{% endblock %}
+
 {% block content %}
-<div class="container mt-4 text-center">
-    <h2>Search in progress...</h2>
-    <p>Your request is being processed in the background. This page will automatically redirect once the results are ready.</p>
-    <div class="spinner-border text-primary" role="status">
-      <span class="visually-hidden">Loading...</span>
+<section class="waiting">
+    <div>
+        <p class="eyebrow" style="justify-content: center;"><span>Still working</span></p>
+        <h1>Checking sites<br><em>in the background.</em></h1>
+        <p>This page will open the profiles as soon as the lookup finishes.</p>
+        <div class="pulse" role="status" aria-label="Search in progress"></div>
     </div>
-    <script>
-    // Auto-refresh the page every 5 seconds to check completion
-    setTimeout(function() {
+</section>
+<script>
+    setTimeout(function () {
         window.location.reload();
     }, 5000);
-    </script>
-</div>
+</script>
 {% endblock %}

@@ -1,148 +1,120 @@
 {% extends "base.html" %}
+{% block title %}Profiles — Maigret{% endblock %}
+
 {% block content %}
-<style>
-    .tag-badge {
-       background-color: #214e7b;
-       padding: 2px 8px;
-       border-radius: 12px;
-       font-size: 14px;
-       display: inline-flex;
-       align-items: center;
-       gap: 5px;
-       margin: 2px;
-       color: white;
-    }
-    
-    .profile-list {
-       list-style: none;
-       padding: 0;
-    }
-    
-    .profile-item {
-       margin-bottom: 10px;
-       padding: 10px;
-       display: flex;
-       justify-content: space-between;
-       align-items: center;
-       border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-    }
-    
-    .profile-link {
-       display: flex;
-       align-items: center;
-       gap: 8px;
-    }
-    
-    .favicon {
-       width: 16px;
-       height: 16px;
-    }
-    
-    .tag-container {
-       display: flex;
-       flex-wrap: wrap;
-       gap: 5px;
-       justify-content: flex-end;
-    }
-    
-    .report-container {
-       margin-bottom: 1rem;
-    }
-    
-    .report-header {
-       cursor: pointer;
-       padding: 1rem;
-       background: rgba(255, 255, 255, 0.05);
-       border-radius: 4px;
-       margin-bottom: 0.5rem;
-    }
-    
-    .report-content {
-       display: none;
-    }
-    
-    .report-content.show {
-       display: block;
-    }
-    
-    .chevron::after {
-       content: '▼';
-       margin-left: 8px;
-       transition: transform 0.2s;
-    }
-    
-    .chevron.collapsed::after {
-       transform: rotate(-90deg);
-    }
-    </style>
+<article class="sheet">
+    <p class="eyebrow"><span>Profiles</span><span>{{ timestamp }}</span></p>
+    <h1>{{ usernames | join(' · ') }}</h1>
+    <p class="sheet-lead">{% if purpose == 'free' %}These are the sites that already took the name. The ones that stayed quiet were free when the lookup finished.{% elif purpose == 'mine' %}Mark the pages that are yours, then copy the links. They stay in this browser.{% elif purpose == 'copy' %}These public pages use the name. Open each one and see if it is you, your business, or someone else.{% else %}Here's where that name shows up.{% endif %} <a href="{{ url_for('index') }}">Back to start.</a></p>
+    <div class="kept-bar">
+        <button type="button" class="btn btn-ghost" id="copy-links">Copy kept links</button>
+    </div>
 
-    <div class="form-container">
-        <h1 class="mb-4">Search Results</h1>
-
-        <p>The search has completed. <a href="{{ url_for('index')}}">Back to start.</a></p>
-     
-        {% if graph_file %}
-        <h3>Combined Graph</h3>
-        <iframe src="{{ url_for('download_report', filename=graph_file) }}" style="width:100%; height:600px; border:none;"></iframe>
-        {% endif %}
-     
-        <hr>
-     
-        {% if individual_reports %}
-        <h3>Individual Reports</h3>
-        <div class="reports-list">
-            {% for report in individual_reports %}
-            <div class="report-container">
-                <div class="report-header" onclick="toggleReport(this)" data-target="report-{{ loop.index }}">
-                    <h5 class="mb-0 d-flex align-items-center">
-                        <span>{{ report.username }}</span>
-                        <span class="chevron"></span>
-                    </h5>
+    {% if individual_reports %}
+    <div class="dossier">
+        {% for report in individual_reports %}
+        <section>
+            <button type="button" class="report-header" onclick="toggleReport(this)" data-target="report-{{ loop.index }}" aria-expanded="{{ 'true' if loop.first else 'false' }}">
+                <span class="report-id">
+                    <span class="report-name">{{ report.username }}</span>
+                    <span class="report-meta">{{ report.claimed_profiles | length if report.claimed_profiles else 0 }} profiles</span>
+                </span>
+                <span class="chevron {% if not loop.first %}collapsed{% endif %}" aria-hidden="true"></span>
+            </button>
+            <div id="report-{{ loop.index }}" class="report-content {% if loop.first %}show{% endif %}">
+                <div class="downloads">
+                    <a href="{{ url_for('download_report', filename=report.csv_file) }}" target="_blank" rel="noopener">CSV Report</a>
+                    <a href="{{ url_for('download_report', filename=report.json_file) }}" target="_blank" rel="noopener">JSON Report</a>
+                    <a href="{{ url_for('download_report', filename=report.pdf_file) }}" target="_blank" rel="noopener">PDF Report</a>
+                    <a href="{{ url_for('download_report', filename=report.html_file) }}" target="_blank" rel="noopener">HTML Report</a>
                 </div>
-                <div id="report-{{ loop.index }}" class="report-content">
-                    <p>
-                        <a href="{{ url_for('download_report', filename=report.csv_file) }}" target="_blank" rel="noopener">CSV Report</a> |
-                        <a href="{{ url_for('download_report', filename=report.json_file) }}" target="_blank" rel="noopener">JSON Report</a> |
-                        <a href="{{ url_for('download_report', filename=report.pdf_file) }}" target="_blank" rel="noopener">PDF Report</a> |
-                        <a href="{{ url_for('download_report', filename=report.html_file) }}" target="_blank" rel="noopener">HTML Report</a>
-                    </p>
-                    {% if report.claimed_profiles %}
-                    <strong>Claimed Profiles:</strong>
-                    <ul class="profile-list">
-                        {% for profile in report.claimed_profiles %}
-                        <li class="profile-item">
-                            <div class="profile-link">
-                                <img class="favicon" src="https://www.google.com/s2/favicons?domain={{ profile.url }}" onerror="this.style.display='none'" alt="">
-                                <a href="{{ profile.url }}" target="_blank">{{ profile.site_name }}</a>
-                            </div>
+                {% if report.claimed_profiles %}
+                <ul class="profiles">
+                    {% for profile in report.claimed_profiles %}
+                    <li class="profile" data-user="{{ report.username }}" data-site="{{ profile.site_name }}" data-url="{{ profile.url or '' }}">
+                        {% set parts = profile.url.split('/') if profile.url else [] %}
+                        {% set host = parts[2] if parts|length > 2 else '' %}
+                        {% if host %}
+                        <img class="logo" src="https://www.google.com/s2/favicons?domain={{ host }}&sz=64" alt="" referrerpolicy="no-referrer" onerror="this.hidden=true; this.nextElementSibling.hidden=false;">
+                        <span class="avatar" hidden aria-hidden="true">{{ profile.site_name[:1] | upper }}</span>
+                        {% else %}
+                        <span class="avatar" aria-hidden="true">{{ profile.site_name[:1] | upper }}</span>
+                        {% endif %}
+                        <div>
+                            <a href="{{ profile.url }}" target="_blank" rel="noopener">{{ profile.site_name }}</a>
+                            {% if profile.url %}
+                            <span class="profile-url">{{ profile.url }}</span>
+                            {% endif %}
                             {% if profile.tags %}
-                            <div class="tag-container">
+                            <div class="tag-row">
                                 {% for tag in profile.tags %}
-                                <span class="tag-badge">{{ tag }}</span>
+                                <span class="mini-tag">{{ tag }}</span>
                                 {% endfor %}
                             </div>
                             {% endif %}
-                        </li>
-                        {% endfor %}
-                    </ul>
-                    {% else %}
-                    <p>No claimed profiles found.</p>
-                    {% endif %}
-                </div>
+                        </div>
+                        <button type="button" class="keep-btn" aria-pressed="false">Keep</button>
+                    </li>
+                    {% endfor %}
+                </ul>
+                {% else %}
+                <p class="sheet-lead">This name wasn't found on the sites that were checked.</p>
+                {% endif %}
             </div>
-            {% endfor %}
-        </div>
-        {% else %}
-        <p>No individual reports available.</p>
-        {% endif %}
-     </div>
-     
-     <script>
-     function toggleReport(header) {
-        const reportId = header.getAttribute('data-target');
-        const content = document.getElementById(reportId);
-        content.classList.toggle('show');
-        header.querySelector('.chevron').classList.toggle('collapsed');
-     }
-     </script>
+        </section>
+        {% endfor %}
+    </div>
+    {% else %}
+    <p class="sheet-lead">No individual reports available.</p>
+    {% endif %}
+
+    {% if graph_file %}
+    <div class="frame">
+        <iframe src="{{ url_for('download_report', filename=graph_file) }}" title="Combined graph of claimed accounts"></iframe>
+    </div>
+    <p class="frame-note">How these profiles connect, through the names and links published on those pages.</p>
+    {% endif %}
+</article>
+
+<script>
+function toggleReport(header) {
+    const content = document.getElementById(header.getAttribute('data-target'));
+    const open = content.classList.toggle('show');
+    header.querySelector('.chevron').classList.toggle('collapsed', !open);
+    header.setAttribute('aria-expanded', open ? 'true' : 'false');
+}
+
+(function () {
+    if (!window.maigretPages) return;
+    const names = [];
+    document.querySelectorAll('.profile').forEach(function (li) {
+        const user = li.dataset.user || '';
+        const site = li.dataset.site || '';
+        const url = li.dataset.url || '';
+        if (names.indexOf(user) === -1) names.push(user);
+        const btn = li.querySelector('.keep-btn');
+        if (!btn || !url) return;
+        function paint() {
+            const on = window.maigretPages.has(user, url);
+            btn.classList.toggle('is-on', on);
+            btn.textContent = on ? 'Kept' : 'Keep';
+            btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+        }
+        btn.addEventListener('click', function () {
+            window.maigretPages.toggle(user, site, url, !window.maigretPages.has(user, url));
+            paint();
+        });
+        paint();
+    });
+    const copy = document.getElementById('copy-links');
+    if (copy) {
+        copy.addEventListener('click', function () {
+            window.maigretPages.copy(names).then(function (ok) {
+                copy.textContent = ok ? 'Copied' : 'Keep a page first';
+                setTimeout(function () { copy.textContent = 'Copy kept links'; }, 1600);
+            });
+        });
+    }
+})();
+</script>
 {% endblock %}

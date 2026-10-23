@@ -21,9 +21,15 @@ from typing import Any, Dict
 import maigret
 import maigret.settings
 from maigret.checking import build_cloudflare_bypass_config
-from maigret.result import MaigretCheckStatus
+from maigret.result import MaigretCheckResult, MaigretCheckStatus
 from maigret.sites import MaigretDatabase
 from maigret.report import generate_report_context
+from maigret.web.names import (
+    is_person_name,
+    lookup_public_name,
+    name_handles,
+    split_queries,
+)
 
 app = Flask(__name__)
 # Use environment variable for secret key, generate random one if not set
@@ -47,9 +53,11 @@ class StreamNotify:
     exactly the granularity we want to stream to the browser.
     """
 
-    def __init__(self, event_queue, username):
+    def __init__(self, event_queue, username, display_name=None, emit_roster=True):
         self.q = event_queue
         self.username = username
+        self.display_name = display_name or username
+        self.emit_roster = emit_roster
         self.total = 0
         self.checked = 0
         self.sites = {}
@@ -62,10 +70,27 @@ class StreamNotify:
 
     def set_total(self, total):
         self.total = total
-        self.q.put({'type': 'start', 'username': self.username, 'total': total})
+        self.q.put(
+            {
+                'type': 'start',
+                'username': self.display_name,
+                'handle': self.username,
+                'total': total,
+            }
+        )
 
     def set_sites(self, sites):
         self.sites = sites
+        # A short roster lets the page draw every site as free or taken.
+        # Wider lookups stay on the profile list; an 8,000-name dump is noise.
+        # Name searches skip it: several spellings of one name would redraw
+        # the same board over and over.
+        if self.emit_roster and sites and len(sites) <= 120:
+            roster = [
+                {'name': name, 'url': getattr(site, 'url_main', '') or ''}
+                for name, site in sites.items()
+            ]
+            self.q.put({'type': 'roster', 'username': self.username, 'sites': roster})
 
     def update(self, result, is_similar=False):
         self.checked += 1
@@ -82,23 +107,37 @@ class StreamNotify:
                 for k, v in (result.ids_data or {}).items()
                 if k != '_extractor' and isinstance(v, (str, int, float))
             }
+            site = self.sites.get(result.site_name)
+            rank = getattr(site, 'alexa_rank', None) if site is not None else None
+            if rank is not None and rank >= 10**12:
+                rank = None
             self.q.put(
                 {
                     'type': 'found',
-                    'username': result.username or self.username,
+                    'username': self.display_name,
+                    'handle': result.username or self.username,
                     'site': result.site_name,
                     'url': result.site_url_user,
                     'ids': ids,
+                    'rank': rank,
+                    'priority': known_priority(result.site_name),
                 }
             )
-        self.q.put(
-            {
-                'type': 'progress',
-                'checked': self.checked,
-                'total': self.total,
-                'site': result.site_name,
-            }
-        )
+        progress = {
+            'type': 'progress',
+            'checked': self.checked,
+            'total': self.total,
+            'site': result.site_name,
+        }
+        if not is_similar:
+            progress['status'] = {
+                MaigretCheckStatus.CLAIMED: 'claimed',
+                MaigretCheckStatus.AVAILABLE: 'available',
+                MaigretCheckStatus.UNKNOWN: 'unknown',
+                MaigretCheckStatus.ILLEGAL: 'illegal',
+            }.get(result.status, 'unknown')
+            progress['username'] = result.username or self.username
+        self.q.put(progress)
 
     # No-op sinks for the rest of the notifier surface the search loop touches.
     def start(self, message=None, id_type="username"):
@@ -220,9 +259,10 @@ async def maigret_search(username, options, query_notify=None):
 
         db = MaigretDatabase().load_from_path(app.config["MAIGRET_DB_FILE"])
 
-        top_sites = int(options.get('top_sites') or 500)
-        if options.get('all_sites'):
-            top_sites = 999999999  # effectively all
+        limit = int(options.get('top_sites') or 500)
+        # Known-first presets need the wide list first, then a cut. A plain
+        # top-N slice would drop familiar sites that sit just outside that rank.
+        fetch_top = 999999999 if options.get('all_sites') or options.get('prefer_known') else limit
 
         tags = options.get('tags', [])
         excluded_tags = options.get('excluded_tags', [])
@@ -230,13 +270,15 @@ async def maigret_search(username, options, query_notify=None):
         logger.info(f"Filtering sites by tags: {tags}, excluded: {excluded_tags}")
 
         sites = db.ranked_sites_dict(
-            top=top_sites,
+            top=fetch_top,
             tags=tags,
             excluded_tags=excluded_tags,
             names=site_list,
             disabled=False,
             id_type='username',
         )
+        if options.get('prefer_known') and not options.get('all_sites'):
+            sites = order_known_first(sites, limit)
 
         logger.info(f"Found {len(sites)} sites matching the tag criteria")
 
@@ -270,14 +312,186 @@ async def maigret_search(username, options, query_notify=None):
         raise
 
 
+def variant_options(options):
+    """Extra spellings of a name stay on the famous sites.
+
+    The closest handle still uses whatever scope the user picked. Repeating
+    an all-sites scan for every spelling would multiply the work by eight.
+    """
+    if options.get('all_sites') or int(options.get('top_sites') or 0) > 100:
+        narrowed = dict(options)
+        narrowed['all_sites'] = False
+        narrowed['prefer_known'] = True
+        narrowed['top_sites'] = 50
+        return narrowed
+    return options
+
+
+def _merge_results(merged, results, handle):
+    for site_name, entry in (results or {}).items():
+        key = site_name if site_name not in merged else f'{site_name} ({handle})'
+        merged[key] = entry
+
+
+def _name_page_result(display_name, page):
+    ids = {}
+    if page.get('about'):
+        ids['about'] = page['about']
+    if page.get('handle'):
+        ids['handle'] = page['handle']
+    status = MaigretCheckResult(
+        username=display_name,
+        site_name=page['site'],
+        site_url_user=page['url'],
+        status=MaigretCheckStatus.CLAIMED,
+        ids_data=ids or None,
+        tags=[],
+    )
+    return {'status': status, 'url_user': page['url']}
+
+
+def _emit_name_page(queue, display_name, page):
+    if queue is None:
+        return
+    ids = {}
+    if page.get('about'):
+        ids['about'] = page['about']
+    if page.get('handle'):
+        ids['handle'] = page['handle']
+    priority = known_priority(page['site'])
+    if priority is None and page['site'] == 'Website':
+        priority = 40
+    queue.put(
+        {
+            'type': 'found',
+            'username': display_name,
+            'handle': page.get('handle') or '',
+            'site': page['site'],
+            'url': page['url'],
+            'ids': ids,
+            'rank': None,
+            'priority': priority,
+            'via': 'name',
+        }
+    )
+
+
+async def _run_query(job, query, options):
+    """Search one field value. A real name stays one subject.
+
+    Returns (stopped, display_name, results_dict).
+    """
+    queue = job['queue'] if job is not None else None
+    query = (query or '').strip()
+    if not query:
+        return False, query, {}
+
+    if not is_person_name(query):
+        notify = StreamNotify(queue, query) if queue is not None else None
+        try:
+            if job is not None:
+                task = asyncio.ensure_future(
+                    maigret_search(query, options, query_notify=notify)
+                )
+                job['task'] = task
+                results = await task
+            else:
+                results = await maigret_search(query, options)
+            return False, query, results or {}
+        except asyncio.CancelledError:
+            if queue is not None:
+                queue.put({'type': 'stopped', 'username': query})
+            return True, query, (notify.results if notify else {})
+        except Exception as exc:
+            logging.error(f"Error searching username {query}: {exc}")
+            if queue is not None:
+                queue.put({'type': 'error', 'message': str(exc), 'username': query})
+            return False, query, (notify.results if notify and notify.results else {})
+
+    handles = name_handles(query)
+    wide = bool(options.get('all_sites') or int(options.get('top_sites') or 0) > 100)
+    if queue is not None:
+        queue.put(
+            {
+                'type': 'name',
+                'query': query,
+                'handles': handles,
+                'about': '',
+                'wide': wide,
+            }
+        )
+
+    merged = {}
+    try:
+        pages = await asyncio.to_thread(lookup_public_name, query)
+    except asyncio.CancelledError:
+        return True, query, merged
+    except Exception as exc:
+        logging.info('Name lookup failed for %s: %s', query, exc)
+        pages = []
+
+    about = ''
+    for page in pages:
+        about = about or page.get('about') or ''
+        _merge_results(merged, {page['site']: _name_page_result(query, page)}, query)
+        _emit_name_page(queue, query, page)
+    if queue is not None and (about or pages):
+        queue.put(
+            {
+                'type': 'name',
+                'query': query,
+                'handles': handles,
+                'about': about,
+                'wide': wide,
+            }
+        )
+
+    stopped = False
+    for index, handle in enumerate(handles):
+        if job is not None and job.get('cancelled'):
+            stopped = True
+            break
+        opts = options if index == 0 else variant_options(options)
+        notify = (
+            StreamNotify(queue, handle, display_name=query, emit_roster=False)
+            if queue is not None
+            else None
+        )
+        try:
+            if job is not None:
+                task = asyncio.ensure_future(
+                    maigret_search(handle, opts, query_notify=notify)
+                )
+                job['task'] = task
+                found = await task
+            else:
+                found = await maigret_search(handle, opts)
+        except asyncio.CancelledError:
+            found = notify.results if notify else {}
+            stopped = True
+        except Exception as exc:
+            logging.error(f"Error searching handle {handle} for {query}: {exc}")
+            if queue is not None:
+                queue.put({'type': 'error', 'message': str(exc), 'username': query})
+            found = notify.results if notify and notify.results else {}
+        _merge_results(merged, found, handle)
+        if stopped:
+            break
+    if stopped and queue is not None:
+        queue.put({'type': 'stopped', 'username': query})
+    return stopped, query, merged
+
+
 async def search_multiple_usernames(usernames, options):
     results = []
     for username in usernames:
         try:
-            search_results = await maigret_search(username.strip(), options)
-            results.append((username.strip(), 'username', search_results))
+            _stopped, query, found = await _run_query(None, username, options)
         except Exception as e:
             logging.error(f"Error searching username {username}: {str(e)}")
+            continue
+        if found:
+            results.append((query, 'username', found))
     return results
 
 
@@ -402,17 +616,125 @@ def process_search_task(usernames, options, timestamp):
 
 
 def parse_usernames(form):
-    usernames_input = form.get('usernames', '').strip()
-    return [u.strip() for u in usernames_input.replace(',', ' ').split() if u.strip()]
+    return split_queries(form.get('usernames', ''))
+
+
+# Household platforms, most familiar first. Top 10 / 50 / 100 start here,
+# then fill any remaining slots from the usual popularity ranking.
+WELL_KNOWN = (
+    'Facebook',
+    'Instagram',
+    'TikTok',
+    'YouTube',
+    'Twitter',
+    'Reddit',
+    'Snapchat',
+    'LinkedIn',
+    'Pinterest',
+    'GitHub',
+    'Discord',
+    'Telegram',
+    'Twitch',
+    'Spotify',
+    'WhatsApp',
+    'Threads',
+    'Tumblr',
+    'Flickr',
+    'Medium',
+    'VK',
+    'Steam',
+    'Quora',
+    'Wikipedia',
+    'Vimeo',
+    'Roblox',
+    'Bluesky',
+    'Patreon',
+    'SoundCloud',
+    'Behance',
+    'GitLab',
+    'StackOverflow',
+    'IMDb',
+    'Goodreads',
+    'Strava',
+    'DeviantArt',
+    'Xbox',
+    'PlayStation',
+    'EpicGames',
+    'PayPal',
+    'Amazon',
+    'eBay',
+    'Etsy',
+    'Netflix',
+    'Letterboxd',
+    'Duolingo',
+    'Mastodon',
+    'Kick',
+    'OnlyFans',
+    'Binance',
+    'Chess.com',
+    'ArtStation',
+    'Dribbble',
+)
+WELL_KNOWN_INDEX = {name.lower(): index for index, name in enumerate(WELL_KNOWN)}
+KNOWN_PRESETS = {'10': 10, '50': 50, '100': 100}
+
+
+def known_priority(site_name):
+    if not site_name:
+        return None
+    return WELL_KNOWN_INDEX.get(site_name.lower())
+
+
+def order_known_first(sites, limit):
+    """Famous platforms first, then the rest of `sites` in its current rank order."""
+    by_name = {name.lower(): (name, site) for name, site in sites.items()}
+    ordered = []
+    seen = set()
+    for known in WELL_KNOWN:
+        key = known.lower()
+        if key in by_name and key not in seen:
+            ordered.append(by_name[key])
+            seen.add(key)
+        if len(ordered) >= limit:
+            break
+    if len(ordered) < limit:
+        for name, site in sites.items():
+            key = name.lower()
+            if key in seen:
+                continue
+            ordered.append((name, site))
+            seen.add(key)
+            if len(ordered) >= limit:
+                break
+    return dict(ordered)
 
 
 def parse_search_options(form):
     settings = load_settings()
+    # Platforms chosen on the search form limit this lookup. An empty field
+    # keeps whatever was saved in Settings.
+    posted_sites = [
+        s.strip() for s in (form.get('site') or '').split(',') if s.strip()
+    ]
+    mode = form.get('mode') or 'fast'
+    if mode == 'full':
+        all_sites = True
+        top_sites = settings['top_sites']
+        prefer_known = False
+    elif mode in KNOWN_PRESETS:
+        all_sites = False
+        top_sites = KNOWN_PRESETS[mode]
+        prefer_known = True
+    else:
+        all_sites = False
+        top_sites = settings['top_sites']
+        prefer_known = False
     return {
-        'top_sites': settings['top_sites'],
+        'top_sites': top_sites,
         'timeout': settings['timeout'],
         'use_cookies': 'use_cookies' in form,
-        'all_sites': form.get('mode') == 'full',
+        'all_sites': all_sites,
+        'prefer_known': prefer_known,
         'disable_recursive_search': settings['disable_recursive_search'],
         'disable_extracting': settings['disable_extracting'],
         'with_domains': settings['with_domains'],
@@ -422,37 +744,20 @@ def parse_search_options(form):
         'permute': settings['permute'],
         'tags': settings['tags'],
         'excluded_tags': settings['excluded_tags'],
-        'site_list': settings['site_list'],
+        'site_list': posted_sites or settings['site_list'],
     }
 
 
 async def _stream_search(job, usernames, options):
-    q = job['queue']
     general_results = []
     for username in usernames:
         if job['cancelled']:
             break
-        notify = StreamNotify(q, username.strip())
-        task = asyncio.ensure_future(
-            maigret_search(username.strip(), options, query_notify=notify)
-        )
-        job['task'] = task
-        try:
-            results = await task
-            general_results.append((username.strip(), 'username', results))
-        except asyncio.CancelledError:
-            # The task never got to return its own results dict, but every
-            # site checked before cancellation already streamed a 'found' /
-            # 'progress' event and was captured by the notifier — report on
-            # that instead of throwing it away.
-            if notify.results:
-                general_results.append((username.strip(), 'username', notify.results))
-            q.put({'type': 'stopped', 'username': username.strip()})
+        stopped, query, results = await _run_query(job, username, options)
+        if results:
+            general_results.append((query, 'username', results))
+        if stopped:
             break
-        except Exception as e:
-            if notify.results:
-                general_results.append((username.strip(), 'username', notify.results))
-            q.put({'type': 'error', 'message': str(e), 'username': username.strip()})
     return general_results
 
 
@@ -479,19 +784,26 @@ def run_stream_job(job_id, usernames, options):
         try:
             job_results[job_id] = build_reports(general_results, usernames, job_id)
             job_results[job_id]['started_at'] = started_at
+            job_results[job_id]['purpose'] = job.get('purpose', 'lookup')
             done_event['redirect'] = f"/results/search_{job_id}"
         except Exception as e:
             logging.error(f"Error building reports for live scan {job_id}: {str(e)}")
     job['queue'].put(done_event)
 
 
-def start_live_job(usernames, options):
+PURPOSES = ('free', 'mine', 'lookup', 'copy')
+
+
+def start_live_job(usernames, options, purpose='lookup'):
+    if purpose not in PURPOSES:
+        purpose = 'lookup'
     job_id = uuid.uuid4().hex
     live_jobs[job_id] = {
         'queue': queue.Queue(),
         'cancelled': False,
         'loop': None,
         'task': None,
+        'purpose': purpose,
     }
     Thread(target=run_stream_job, args=(job_id, usernames, options)).start()
     return job_id
@@ -552,11 +864,14 @@ def api_sites():
     from the Settings modal instead of loading the DB on every page render."""
     db = MaigretDatabase().load_from_path(app.config["MAIGRET_DB_FILE"])
     site_options = []
+    platforms = []
     for site in db.sites:
         site_options.append(site.name)
         if site.url_main and site.url_main not in site_options:
             site_options.append(site.url_main)
-    return {'sites': sorted(set(site_options))}
+        platforms.append({'name': site.name, 'url': site.url_main or ''})
+    platforms.sort(key=lambda item: item['name'].lower())
+    return {'sites': sorted(set(site_options)), 'platforms': platforms}
 
 
 @app.route('/settings', methods=['POST'])
@@ -582,7 +897,8 @@ def live_start():
         return redirect(url_for('index'))
 
     options = parse_search_options(request.form)
-    job_id = start_live_job(usernames, options)
+    purpose = request.form.get('purpose') or 'lookup'
+    job_id = start_live_job(usernames, options, purpose)
     return redirect(url_for('live_results', job_id=job_id))
 
 
@@ -597,7 +913,16 @@ def live_results(job_id):
     if result and result.get('status') == 'completed':
         done_redirect = url_for('results', session_id=result['session_folder'])
 
-    return render_template('live.html', job_id=job_id, done_redirect=done_redirect)
+    purpose = 'lookup'
+    job = live_jobs.get(job_id)
+    if job and job.get('purpose') in PURPOSES:
+        purpose = job['purpose']
+    elif result and result.get('purpose') in PURPOSES:
+        purpose = result['purpose']
+
+    return render_template(
+        'live.html', job_id=job_id, done_redirect=done_redirect, purpose=purpose
+    )
 
 
 # Modified search route
@@ -683,6 +1008,7 @@ def results(session_id):
         graph_file=result_data['graph_file'],
         individual_reports=result_data['individual_reports'],
         timestamp=session_id.replace('search_', ''),
+        purpose=result_data.get('purpose') or 'lookup',
     )
 
 

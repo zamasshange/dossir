@@ -1,76 +1,307 @@
 {% extends "base.html" %}
+{% block title %}Looking up — Maigret{% endblock %}
+{% block body_class %}is-live{% endblock %}
+
 {% block content %}
-<style>
-    #graph {
-        height: 600px;
-        border: 1px solid var(--bs-border-color);
-        border-radius: 8px;
-        background: rgba(255, 255, 255, 0.02);
-    }
-
-    .live-stats {
-        display: flex;
-        gap: 1.5rem;
-        flex-wrap: wrap;
-        align-items: center;
-        margin-bottom: 0.75rem;
-    }
-</style>
-
-<div class="form-container">
-    <div class="d-flex justify-content-between align-items-center mb-2">
-        <h1 class="mb-0">Live Results</h1>
+<section class="live" data-purpose="{{ purpose }}">
+    <aside class="live-side">
         <div>
-            <a id="analyzeBtn" href="#" class="btn btn-warning" style="display:none;">Analyze</a>
-            <button type="button" id="stopBtn" class="btn btn-danger">Stop</button>
+            <p class="live-kicker">{% if purpose == 'free' %}Availability{% elif purpose == 'mine' %}Your pages{% elif purpose == 'copy' %}Your name{% else %}Looking now{% endif %}</p>
+            <p id="live-status" class="live-status" aria-live="polite">Starting…</p>
+        </div>
+        <div class="stats">
+            <div>
+                <span class="stat-label">Checked</span>
+                <span class="stat-line">
+                    <span class="stat-num" id="stat-checked">0</span>
+                    <span class="stat-of">/ <span id="stat-total">?</span></span>
+                </span>
+            </div>
+            <div>
+                <span class="stat-label">Found</span>
+                <span class="stat-num" id="stat-found">0</span>
+            </div>
+        </div>
+        <div class="meter" aria-hidden="true">
+            <div id="live-progress"></div>
+        </div>
+        <p id="stat-last" class="last-site">Waiting for the first reply.</p>
+        <div class="live-actions">
+            <a id="analyzeBtn" href="#" class="btn" style="display:none;">See all profiles</a>
+            <button type="button" id="stopBtn" class="btn btn-ghost">Stop</button>
+            <p class="hint">{% if purpose == 'free' %}The board on the right marks each famous site free or taken. A taken tile opens that page.{% elif purpose == 'mine' %}Mark the pages that are yours. The links stay in this browser so you can paste them later.{% elif purpose == 'copy' %}Open each page and see if it is you, your business, or someone else.{% else %}Search the profile list on the right. Open one to read what that page published. Hover a dot to click its address.{% endif %}</p>
+        </div>
+    </aside>
+
+    <div class="live-graph">
+        <div id="graph"></div>
+        <div id="node-logos" class="node-logos"></div>
+        <div id="hover-card" class="hover-card" hidden>
+            <img id="hover-logo" alt="" referrerpolicy="no-referrer">
+            <div>
+                <strong id="hover-name"></strong>
+                <a id="hover-link" target="_blank" rel="noopener"></a>
+            </div>
         </div>
     </div>
-    <div class="live-stats">
-        <span id="live-status" class="text-muted">Starting…</span>
-        <span>Checked: <strong id="stat-checked">0</strong> / <span id="stat-total">?</span></span>
-        <span>Found: <strong id="stat-found">0</strong></span>
-    </div>
-    <div class="progress mb-3" style="height: 8px;">
-        <div id="live-progress" class="progress-bar" role="progressbar" style="width: 0%;"></div>
-    </div>
-    <div id="graph"></div>
-    <p class="text-muted mt-2" style="font-size: 0.85rem;">Double-click a site node to open the profile.</p>
-</div>
 
+    <aside class="live-feed" aria-label="Profiles found">
+        <div id="name-banner" class="name-banner" hidden>
+            <p class="live-kicker">This name</p>
+            <h2 id="name-title"></h2>
+            <p id="name-about" class="purpose-note" hidden></p>
+            <p id="name-handles" class="help"></p>
+        </div>
+        {% if purpose == 'free' %}
+        <div id="avail-wrap" class="avail-wrap">
+            <div class="feed-head">
+                <h2>Free or taken</h2>
+            </div>
+            <div id="avail" class="avail-board"></div>
+            <p class="help">Top 10, 50, and 100 fill this board. A wider lookup keeps the taken profiles in the list below.</p>
+        </div>
+        {% elif purpose == 'copy' %}
+        <p class="purpose-note">These are public profiles that use the name. Open each one. Maigret does not decide whether it is you.</p>
+        {% endif %}
+        <div class="feed-tools">
+            <div class="feed-head">
+                <h2>{% if purpose == 'mine' %}Your pages{% elif purpose == 'copy' %}Pages using this name{% else %}Profiles{% endif %}</h2>
+                {% if purpose == 'mine' %}
+                <button type="button" class="btn btn-ghost" id="copy-links">Copy my links</button>
+                {% endif %}
+            </div>
+            <div class="suggest">
+                <label class="field-label" for="hit-search">Search platforms</label>
+                <input class="control" id="hit-search" type="search" placeholder="Instagram, Facebook, GitHub…" autocomplete="off">
+                <ul class="suggest-list" id="hit-list" role="listbox" hidden></ul>
+            </div>
+        </div>
+        <p id="feed-empty" class="feed-empty">{% if purpose == 'free' %}Taken profiles collect here. The board above is the full free-or-taken picture.{% elif purpose == 'mine' %}Your pages show up here. Open one and mark it if it is yours.{% elif purpose == 'copy' %}Every public profile using this name lands here. Open it before you decide anything.{% else %}Profiles show up here as soon as a site says the name is taken. The best-known ones stay at the top.{% endif %}</p>
+        <p id="feed-none" class="feed-empty" hidden>No profile matches that.</p>
+        <ol class="feed" id="feed"></ol>
+    </aside>
+</section>
+{% endblock %}
+
+{% block scripts %}
 <script src="https://cdn.jsdelivr.net/npm/vis-network@9.1.9/standalone/umd/vis-network.min.js"></script>
-
 <script>
     const jobId = {{ job_id|tojson }};
     const doneRedirect = {{ done_redirect|tojson }};
+    const purpose = {{ purpose|tojson }};
+    const seenNames = [];
 
     let nodes = null, edges = null, network = null;
     let foundCount = 0;
+    let finished = false;
+    let evtSource = null;
+    const logos = new Map();
+    let hideTimer = null;
+    let pinnedId = null;
+
+    function hostOf(url) {
+        try { return new URL(url).hostname; } catch (e) { return ''; }
+    }
+
+    function placeLogos() {
+        if (!network || !logos.size) return;
+        const canvas = document.querySelector('#graph canvas');
+        const layer = document.getElementById('node-logos');
+        if (!canvas || !layer) return;
+        const origin = canvas.getBoundingClientRect();
+        const base = layer.getBoundingClientRect();
+        const ids = Array.from(logos.keys());
+        const pos = network.getPositions(ids);
+        ids.forEach(function (id) {
+            const p = pos[id];
+            const img = logos.get(id);
+            if (!p || !img) return;
+            const dom = network.canvasToDOM(p);
+            img.style.left = (origin.left - base.left + dom.x) + 'px';
+            img.style.top = (origin.top - base.top + dom.y) + 'px';
+        });
+    }
+
+    function ensureLogo(id, url) {
+        if (logos.has(id)) return;
+        const src = window.maigretIcon(url);
+        if (!src) return;
+        const img = document.createElement('img');
+        img.className = 'node-logo';
+        img.alt = '';
+        img.referrerPolicy = 'no-referrer';
+        img.src = src;
+        img.addEventListener('error', function () {
+            img.remove();
+            logos.delete(id);
+        });
+        document.getElementById('node-logos').appendChild(img);
+        logos.set(id, img);
+    }
+
+    function hideCard() {
+        pinnedId = null;
+        document.getElementById('hover-card').hidden = true;
+    }
+
+    function scheduleHide() {
+        clearTimeout(hideTimer);
+        hideTimer = setTimeout(function () {
+            if (!pinnedId) hideCard();
+        }, 700);
+    }
+
+    function showCard(node, domPoint) {
+        const card = document.getElementById('hover-card');
+        const link = document.getElementById('hover-link');
+        const name = document.getElementById('hover-name');
+        const logo = document.getElementById('hover-logo');
+        name.textContent = node.label;
+        link.href = node.url;
+        link.textContent = node.url;
+        const src = window.maigretIcon(node.url);
+        logo.hidden = !src;
+        if (src) {
+            logo.src = src;
+            logo.onerror = function () { logo.hidden = true; };
+        }
+        card.hidden = false;
+        const canvas = document.querySelector('#graph canvas');
+        const layer = document.querySelector('.live-graph');
+        let originX = 0;
+        let originY = 0;
+        if (canvas && layer) {
+            const origin = canvas.getBoundingClientRect();
+            const base = layer.getBoundingClientRect();
+            originX = origin.left - base.left;
+            originY = origin.top - base.top;
+        }
+        let x = originX + domPoint.x + 14;
+        let y = originY + domPoint.y - 18;
+        card.style.left = x + 'px';
+        card.style.top = y + 'px';
+        const bounds = document.querySelector('.live-graph').getBoundingClientRect();
+        const rect = card.getBoundingClientRect();
+        if (rect.right > bounds.right - 8) x -= rect.width + 36;
+        if (rect.bottom > bounds.bottom - 8) y -= rect.height + 12;
+        if (x < 8) x = 8;
+        if (y < 8) y = 8;
+        card.style.left = x + 'px';
+        card.style.top = y + 'px';
+    }
+
+    function pointFor(id) {
+        const pos = network.getPositions([id])[id];
+        if (!pos) return null;
+        return network.canvasToDOM(pos);
+    }
+
+    function reveal(id) {
+        const node = nodes.get(id);
+        if (!node || !node.url) return;
+        pinnedId = id;
+        network.selectNodes([id]);
+        network.focus(id, { scale: 1.2, animation: { duration: 380, easingFunction: 'easeInOutQuad' } });
+        setTimeout(function () {
+            const point = pointFor(id);
+            if (point) showCard(node, point);
+        }, 420);
+    }
+
+    function palette() {
+        const paper = document.documentElement.getAttribute('data-theme') === 'paper';
+        return paper
+            ? { font: '#1c1915', edge: '#c9bfb2', data: '#8a5a2b', site: '#0f7a68', user: '#a37b00' }
+            : { font: '#f3eee6', edge: '#4a4036', data: '#c4a574', site: '#3dbea8', user: '#e7b008' };
+    }
 
     function ensureGraph() {
         if (network) return;
+        const colors = palette();
         nodes = new vis.DataSet();
         edges = new vis.DataSet();
         network = new vis.Network(document.getElementById('graph'), { nodes, edges }, {
-            nodes: { shape: 'dot', size: 14, font: { color: '#dee2e6' } },
-            edges: { color: { color: '#555' }, smooth: false },
+            nodes: { shape: 'dot', size: 16, font: { color: colors.font, face: 'Segoe UI', size: 14 } },
+            edges: { color: { color: colors.edge }, smooth: false, width: 1 },
             physics: {
                 solver: 'forceAtlas2Based',
-                forceAtlas2Based: { gravitationalConstant: -60, springLength: 110 },
-                stabilization: { iterations: 150 },
+                forceAtlas2Based: { gravitationalConstant: -70, springLength: 120, damping: 0.45 },
+                stabilization: { iterations: 160 },
             },
+            interaction: { hover: true, tooltipDelay: 100000 },
             groups: {
-                username: { color: '#f9cf00', shape: 'star', size: 22 },
-                site: { color: '#28a745' },
-                data: { color: '#214e7b', shape: 'box' },
+                username: { color: colors.user, shape: 'star', size: 28 },
+                site: { color: colors.site, size: 18 },
+                data: { color: colors.data, shape: 'box', font: { size: 12 } },
             },
         });
-        network.on('doubleClick', function (params) {
-            if (params.nodes.length) {
-                const n = nodes.get(params.nodes[0]);
-                if (n && n.url) window.open(n.url, '_blank');
+        network.on('afterDrawing', placeLogos);
+        network.on('hoverNode', function (params) {
+            const n = nodes.get(params.node);
+            if (!n || !n.url || pinnedId) return;
+            clearTimeout(hideTimer);
+            showCard(n, params.pointer.DOM);
+        });
+        network.on('blurNode', function () {
+            if (!pinnedId) scheduleHide();
+        });
+        network.on('click', function (params) {
+            if (!params.nodes.length) {
+                hideCard();
+                return;
+            }
+            const n = nodes.get(params.nodes[0]);
+            if (n && n.url) {
+                pinnedId = n.id;
+                showCard(n, params.pointer.DOM);
             }
         });
+        network.on('doubleClick', function (params) {
+            if (!params.nodes.length) return;
+            const n = nodes.get(params.nodes[0]);
+            if (n && n.url) window.open(n.url, '_blank', 'noopener');
+        });
+        const card = document.getElementById('hover-card');
+        card.addEventListener('mouseenter', function () { clearTimeout(hideTimer); });
+        card.addEventListener('mouseleave', function () { if (!pinnedId) scheduleHide(); });
+        document.addEventListener('keydown', function (e) {
+            if (e.key === 'Escape') hideCard();
+        });
     }
+
+    window.maigretSuggest(document.getElementById('hit-search'), document.getElementById('hit-list'), {
+        getItems: function (q) {
+            const query = q.toLowerCase();
+            if (!nodes) return [{ name: 'No profile matches that', disabled: true }];
+            const found = nodes.get({ filter: function (n) { return n.group === 'site'; } })
+                .filter(function (n) { return String(n.label).toLowerCase().includes(query); })
+                .sort(function (a, b) {
+                    const as = String(a.label).toLowerCase().startsWith(query) ? 0 : 1;
+                    const bs = String(b.label).toLowerCase().startsWith(query) ? 0 : 1;
+                    return as - bs || String(a.label).localeCompare(String(b.label));
+                })
+                .map(function (n) { return { name: n.label, url: n.url, id: n.id }; });
+            return found.length ? found : [{ name: 'No profile matches that', disabled: true }];
+        },
+        onPick: function (item) {
+            const input = document.getElementById('hit-search');
+            input.value = item.name;
+            applyHitFilter();
+            const li = document.querySelector('#feed .hit[data-id="' + CSS.escape(item.id) + '"]');
+            if (li) openHit(li, true);
+            if (network) reveal(item.id);
+        },
+    });
+    document.getElementById('hit-search').addEventListener('input', applyHitFilter);
+
+    document.addEventListener('maigret-theme', function () {
+        if (!network) return;
+        const colors = palette();
+        network.setOptions({
+            nodes: { font: { color: colors.font } },
+            edges: { color: { color: colors.edge } },
+        });
+    });
 
     function addNode(id, label, group, extra) {
         if (!nodes.get(id)) nodes.add(Object.assign({ id, label, group }, extra || {}));
@@ -81,8 +312,6 @@
         if (!edges.get(id)) edges.add({ id, from, to });
     }
 
-    // Noisy/derived keys that add clutter without identity value (mirrors the
-    // report graph's filtering intent).
     const SKIP_ID = /(_count$|^is_|_at$|image|avatar|thumbnail)/i;
 
     function shortLabel(s) {
@@ -90,29 +319,285 @@
         return s.length > 28 ? s.slice(0, 27) + '…' : s;
     }
 
+    function hostLabel(url) {
+        try { return new URL(url).hostname.replace(/^www\./, ''); }
+        catch (e) { return url || ''; }
+    }
+
+    function fieldLabel(key) {
+        return String(key).replace(/_/g, ' ').replace(/\b[a-z]/g, function (c) { return c.toUpperCase(); });
+    }
+
+    function hitScore(ev) {
+        if (ev.priority === 0 || ev.priority) return Number(ev.priority);
+        const rank = Number(ev.rank);
+        if (rank && rank < 1e12) return 1000 + rank;
+        return 1e15;
+    }
+
+    function applyHitFilter() {
+        const input = document.getElementById('hit-search');
+        const q = (input && input.value || '').trim().toLowerCase();
+        const items = document.querySelectorAll('#feed .hit');
+        let shown = 0;
+        items.forEach(function (li) {
+            const hay = ((li.dataset.site || '') + ' ' + (li.dataset.url || '')).toLowerCase();
+            const hide = Boolean(q) && hay.indexOf(q) === -1;
+            li.hidden = hide;
+            if (!hide) shown++;
+        });
+        const empty = document.getElementById('feed-empty');
+        const none = document.getElementById('feed-none');
+        if (empty) empty.hidden = items.length > 0;
+        if (none) none.hidden = !(items.length > 0 && shown === 0);
+    }
+
+    function openHit(li, forceOpen) {
+        document.querySelectorAll('#feed .hit.is-open').forEach(function (other) {
+            if (other === li) return;
+            other.classList.remove('is-open');
+            const more = other.querySelector('.hit-more');
+            if (more) more.hidden = true;
+        });
+        const more = li.querySelector('.hit-more');
+        const willOpen = forceOpen || more.hidden;
+        more.hidden = !willOpen;
+        li.classList.toggle('is-open', willOpen);
+        if (willOpen) li.scrollIntoView({ block: 'nearest' });
+    }
+
+    function addFeed(ev) {
+        const li = document.createElement('li');
+        li.className = 'hit';
+        li.dataset.site = ev.site || '';
+        li.dataset.url = ev.url || '';
+        li.dataset.id = 's:' + (ev.site || '');
+        li.dataset.score = String(hitScore(ev));
+
+        const summary = document.createElement('button');
+        summary.type = 'button';
+        summary.className = 'hit-summary';
+        const icon = window.maigretIcon(ev.url || '');
+        if (icon) {
+            const img = document.createElement('img');
+            img.alt = '';
+            img.referrerPolicy = 'no-referrer';
+            img.src = icon;
+            img.addEventListener('error', function () { img.remove(); });
+            summary.appendChild(img);
+        }
+        const name = document.createElement('strong');
+        name.textContent = ev.site;
+        const host = document.createElement('span');
+        host.className = 'hit-host';
+        host.textContent = hostLabel(ev.url || '');
+        if (ev.handle && ev.handle !== ev.username) {
+            const asHandle = document.createElement('span');
+            asHandle.className = 'hit-as';
+            asHandle.textContent = 'as ' + ev.handle;
+            host.appendChild(document.createTextNode(' '));
+            host.appendChild(asHandle);
+        }
+        const chevron = document.createElement('span');
+        chevron.className = 'hit-chevron';
+        chevron.setAttribute('aria-hidden', 'true');
+        summary.append(name, host, chevron);
+
+        const more = document.createElement('div');
+        more.className = 'hit-more';
+        more.hidden = true;
+        const open = document.createElement('a');
+        open.className = 'btn';
+        open.href = ev.url || '#';
+        open.target = '_blank';
+        open.rel = 'noopener';
+        open.textContent = 'Open profile';
+        more.appendChild(open);
+
+        const ids = Object.entries(ev.ids || {}).filter(function (pair) {
+            return !SKIP_ID.test(pair[0]) && String(pair[1]).length <= 240;
+        });
+        if (ids.length) {
+            const fields = document.createElement('dl');
+            fields.className = 'hit-fields';
+            ids.forEach(function (pair) {
+                const row = document.createElement('div');
+                const dt = document.createElement('dt');
+                dt.textContent = fieldLabel(pair[0]);
+                const dd = document.createElement('dd');
+                dd.textContent = String(pair[1]);
+                row.append(dt, dd);
+                fields.appendChild(row);
+            });
+            more.appendChild(fields);
+        } else {
+            const note = document.createElement('p');
+            note.className = 'help';
+            note.textContent = 'This site confirms the username is taken. The page did not share more public details.';
+            more.appendChild(note);
+        }
+
+        if (purpose === 'mine' && ev.username && ev.url && window.maigretPages) {
+            const keep = document.createElement('label');
+            keep.className = 'keep';
+            const box = document.createElement('input');
+            box.type = 'checkbox';
+            box.checked = window.maigretPages.has(ev.username, ev.url);
+            box.addEventListener('click', function (e) { e.stopPropagation(); });
+            box.addEventListener('change', function () {
+                window.maigretPages.toggle(ev.username, ev.site, ev.url, box.checked);
+            });
+            const caption = document.createElement('span');
+            caption.textContent = 'This is my page';
+            keep.append(box, caption);
+            more.insertBefore(keep, more.firstChild);
+        }
+
+        summary.addEventListener('click', function () { openHit(li); });
+        li.append(summary, more);
+
+        const feed = document.getElementById('feed');
+        const score = hitScore(ev);
+        const next = Array.from(feed.children).find(function (child) {
+            return Number(child.dataset.score) > score;
+        });
+        feed.insertBefore(li, next || null);
+        applyHitFilter();
+    }
+
     function addFound(ev) {
         ensureGraph();
         const uId = 'u:' + ev.username.toLowerCase();
         addNode(uId, ev.username, 'username');
         const sId = 's:' + ev.site;
-        addNode(sId, ev.site, 'site', { url: ev.url, title: ev.url });
+        addNode(sId, ev.site, 'site', { url: ev.url });
+        ensureLogo(sId, ev.url);
         addEdge(uId, sId);
-        for (const [k, v] of Object.entries(ev.ids || {})) {
-            if (SKIP_ID.test(k) || String(v).length > 80) continue;
+        Object.entries(ev.ids || {}).forEach(function (pair) {
+            const k = pair[0];
+            const v = pair[1];
+            if (SKIP_ID.test(k) || String(v).length > 80) return;
             const vId = k + ':' + String(v).toLowerCase();
             addNode(vId, shortLabel(v), 'data', { title: k + ': ' + v });
             addEdge(sId, vId);
+        });
+        addFeed(ev);
+    }
+
+    function rememberName(name) {
+        if (!name || seenNames.indexOf(name) !== -1) return;
+        seenNames.push(name);
+    }
+
+    function availTile(username, site) {
+        const board = document.getElementById('avail');
+        if (!board) return null;
+        return board.querySelector(
+            '.avail[data-user="' + CSS.escape(username) + '"][data-site="' + CSS.escape(site) + '"]'
+        );
+    }
+
+    function paintAvail(username, site, status, url) {
+        const tile = availTile(username, site);
+        if (!tile) return;
+        const state = tile.querySelector('.avail-state');
+        tile.classList.remove('is-wait', 'is-free', 'is-taken', 'is-unknown');
+        if (status === 'claimed') {
+            tile.classList.add('is-taken');
+            if (state) state.textContent = 'Taken';
+            if (url) {
+                tile.href = url;
+                tile.target = '_blank';
+                tile.rel = 'noopener';
+            }
+        } else if (status === 'available') {
+            tile.classList.add('is-free');
+            if (state) state.textContent = 'Free';
+            tile.removeAttribute('href');
+        } else if (status === 'illegal') {
+            tile.classList.add('is-unknown');
+            if (state) state.textContent = 'Not allowed';
+            tile.removeAttribute('href');
+        } else {
+            tile.classList.add('is-unknown');
+            if (state) state.textContent = 'Unclear';
+            tile.removeAttribute('href');
+        }
+        const block = tile.closest('.avail-user');
+        if (!block) return;
+        const tiles = block.querySelectorAll('.avail');
+        let free = 0;
+        let taken = 0;
+        let wait = 0;
+        tiles.forEach(function (item) {
+            if (item.classList.contains('is-free')) free++;
+            else if (item.classList.contains('is-taken')) taken++;
+            else if (item.classList.contains('is-wait')) wait++;
+        });
+        const count = block.querySelector('.avail-count');
+        if (count) {
+            count.textContent = free + ' free · ' + taken + ' taken' + (wait ? ' · ' + wait + ' still checking' : '');
         }
     }
 
+    function buildBoard(username, sites) {
+        const board = document.getElementById('avail');
+        if (!board || !sites || !sites.length) return;
+        rememberName(username);
+        let block = board.querySelector('.avail-user[data-user="' + CSS.escape(username) + '"]');
+        if (!block) {
+            block = document.createElement('section');
+            block.className = 'avail-user';
+            block.dataset.user = username;
+            const head = document.createElement('div');
+            head.className = 'avail-user-head';
+            const title = document.createElement('h3');
+            title.textContent = username;
+            const count = document.createElement('p');
+            count.className = 'avail-count';
+            count.textContent = 'Checking ' + sites.length + ' sites';
+            head.append(title, count);
+            const grid = document.createElement('div');
+            grid.className = 'avail-grid';
+            block.append(head, grid);
+            board.appendChild(block);
+        }
+        const grid = block.querySelector('.avail-grid');
+        sites.forEach(function (site) {
+            if (availTile(username, site.name)) return;
+            const tile = document.createElement('a');
+            tile.className = 'avail is-wait';
+            tile.dataset.user = username;
+            tile.dataset.site = site.name;
+            const icon = window.maigretIcon(site.url || '');
+            if (icon) {
+                const img = document.createElement('img');
+                img.alt = '';
+                img.referrerPolicy = 'no-referrer';
+                img.src = icon;
+                img.addEventListener('error', function () { img.remove(); });
+                tile.appendChild(img);
+            }
+            const name = document.createElement('strong');
+            name.textContent = site.name;
+            const state = document.createElement('span');
+            state.className = 'avail-state';
+            state.textContent = 'Checking';
+            tile.append(name, state);
+            grid.appendChild(tile);
+        });
+    }
+
     function finish(statusText, redirect) {
+        finished = true;
+        if (evtSource) evtSource.close();
         document.getElementById('live-status').textContent = statusText;
         document.getElementById('live-progress').style.width = '100%';
         document.getElementById('stopBtn').disabled = true;
         if (redirect) {
             const btn = document.getElementById('analyzeBtn');
             btn.href = redirect;
-            btn.style.display = 'inline-block';
+            btn.style.display = 'inline-flex';
         }
     }
 
@@ -125,38 +610,110 @@
     function onScanEvent(e) {
         const ev = JSON.parse(e.data);
         const statusEl = document.getElementById('live-status');
-        if (ev.type === 'start') {
+        if (ev.type === 'name') {
+            const banner = document.getElementById('name-banner');
+            const title = document.getElementById('name-title');
+            const about = document.getElementById('name-about');
+            const handles = document.getElementById('name-handles');
+            const wrap = document.getElementById('avail-wrap');
+            if (wrap) wrap.hidden = true;
+            if (banner && title) {
+                title.textContent = ev.query || '';
+                banner.hidden = false;
+            }
+            if (about) {
+                about.textContent = ev.about || '';
+                about.hidden = !ev.about;
+            }
+            if (handles) {
+                const list = (ev.handles || []).join(', ');
+                handles.textContent = list
+                    ? 'Also checking the handles made from this name: ' + list + '.'
+                    : '';
+                if (ev.wide) {
+                    handles.textContent += ' The other spellings stay on the well-known sites.';
+                }
+            }
+            statusEl.textContent = 'Looking up ' + (ev.query || 'this name');
+            rememberName(ev.query);
+        } else if (ev.type === 'start') {
             document.getElementById('stat-total').textContent = ev.total;
-            statusEl.textContent = 'Scanning ' + ev.username + '…';
+            statusEl.textContent = ev.handle && ev.handle !== ev.username
+                ? 'Checking ' + ev.username + ' · ' + ev.handle
+                : 'Checking ' + ev.username;
+            rememberName(ev.username);
+        } else if (ev.type === 'roster') {
+            buildBoard(ev.username, ev.sites || []);
         } else if (ev.type === 'progress') {
             document.getElementById('stat-checked').textContent = ev.checked;
+            if (ev.site) document.getElementById('stat-last').textContent = ev.site;
             if (ev.total) {
                 const pct = Math.min(ev.checked, ev.total) / ev.total * 100;
                 document.getElementById('live-progress').style.width = pct + '%';
+            }
+            if (ev.status && ev.username && ev.site) {
+                paintAvail(ev.username, ev.site, ev.status);
             }
         } else if (ev.type === 'found') {
             foundCount++;
             document.getElementById('stat-found').textContent = foundCount;
             addFound(ev);
+            rememberName(ev.username);
+            paintAvail(ev.username, ev.site, 'claimed', ev.url);
         } else if (ev.type === 'stopped') {
-            statusEl.textContent = 'Stopped.';
+            statusEl.textContent = 'Stopped. Profiles already found are kept.';
         } else if (ev.type === 'error') {
             statusEl.textContent = 'Error: ' + ev.message;
         } else if (ev.type === 'done') {
-            const text = ev.redirect
-                ? 'Completed — ' + foundCount + ' accounts found.'
-                : 'Completed — nothing to analyze.';
+            let text;
+            if (purpose === 'free') {
+                const tiles = document.querySelectorAll('#avail .avail');
+                let free = 0;
+                let taken = 0;
+                tiles.forEach(function (item) {
+                    if (item.classList.contains('is-free')) free++;
+                    else if (item.classList.contains('is-taken')) taken++;
+                });
+                text = tiles.length
+                    ? 'Finished. ' + taken + ' taken, ' + free + ' still free.'
+                    : 'Finished. ' + foundCount + ' profile' + (foundCount === 1 ? '' : 's') + ' found.';
+            } else if (!ev.redirect) {
+                text = 'Finished. No public profiles turned up.';
+            } else if (purpose === 'mine') {
+                text = 'Finished. Mark the pages that are yours.';
+            } else if (purpose === 'copy') {
+                text = 'Finished. Open each page and see if it is yours.';
+            } else {
+                text = 'Finished. ' + foundCount + ' profile' + (foundCount === 1 ? '' : 's') + ' found.';
+            }
             finish(text, ev.redirect);
         }
+    }
+
+    const copyLinks = document.getElementById('copy-links');
+    if (copyLinks && window.maigretPages) {
+        copyLinks.addEventListener('click', function () {
+            window.maigretPages.copy(seenNames).then(function (ok) {
+                copyLinks.textContent = ok ? 'Copied' : 'Mark a page first';
+                setTimeout(function () { copyLinks.textContent = 'Copy my links'; }, 1600);
+            });
+        });
     }
 
     document.getElementById('stopBtn').addEventListener('click', stopScan);
 
     if (doneRedirect) {
-        finish('Completed — ' + foundCount + ' accounts found.', doneRedirect);
+        finish('This lookup already finished. The profiles are ready.', doneRedirect);
     } else {
-        const evtSource = new EventSource('/api/scan/' + jobId + '/stream');
+        evtSource = new EventSource('/api/scan/' + jobId + '/stream');
         evtSource.onmessage = onScanEvent;
+        evtSource.onerror = function () {
+            if (finished) return;
+            finished = true;
+            evtSource.close();
+            document.getElementById('live-status').textContent = 'The live stream closed.';
+            document.getElementById('stopBtn').disabled = true;
+        };
     }
 </script>
 {% endblock %}
